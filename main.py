@@ -42,7 +42,7 @@ def home():
 def run_web_server():
     app_web.run(host='0.0.0.0', port=PORT)
 
-# Common yt-dlp options with Cookies support
+# Updated yt-dlp options with anti-bot bypass & iOS/Android Client fallback
 BASE_YTDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
@@ -51,12 +51,13 @@ BASE_YTDL_OPTS = {
     'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
     'extractor_args': {
         'youtube': {
-            'player_client': ['android', 'ios', 'web'],
-            'skip': ['hls', 'dash']
+            'player_client': ['ios', 'android', 'mweb'],
+            'player_skip': ['webpage', 'configs'],
+            'po_token': ['web+1']
         }
     },
     'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
         'Accept-Language': 'en-US,en;q=0.9',
     }
 }
@@ -143,7 +144,7 @@ async def handle_download_callback(update: Update, context: ContextTypes.DEFAULT
     if action == "dl_mp3":
         ydl_opts = {
             **BASE_YTDL_OPTS,
-            'format': 'bestaudio/best',
+            'format': 'ba/ba*/best',
             'outtmpl': 'downloads/%(id)s.%(ext)s',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -181,7 +182,7 @@ async def handle_download_callback(update: Update, context: ContextTypes.DEFAULT
     elif action == "dl_mp4":
         ydl_opts = {
             **BASE_YTDL_OPTS,
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'format': 'b/best',
             'outtmpl': 'downloads/%(id)s.%(ext)s',
         }
         try:
