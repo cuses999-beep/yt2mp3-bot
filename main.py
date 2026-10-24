@@ -31,6 +31,24 @@ def home():
 def run_web_server():
     app_web.run(host='0.0.0.0', port=PORT)
 
+# Common yt-dlp options to bypass YouTube sign-in block
+BASE_YTDL_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+    'nocheckcertificate': True,
+    'geo_bypass': True,
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'ios', 'web'],
+            'skip': ['hls', 'dash']
+        }
+    },
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+}
+
 async def is_subscribed(bot, user_id):
     if not REQUIRED_CHANNEL or REQUIRED_CHANNEL == "@my_channel_name":
         return True
@@ -112,6 +130,7 @@ async def handle_download_callback(update: Update, context: ContextTypes.DEFAULT
     
     if action == "dl_mp3":
         ydl_opts = {
+            **BASE_YTDL_OPTS,
             'format': 'bestaudio/best',
             'outtmpl': 'downloads/%(id)s.%(ext)s',
             'postprocessors': [{
@@ -119,7 +138,6 @@ async def handle_download_callback(update: Update, context: ContextTypes.DEFAULT
                 'preferredcodec': 'mp3',
                 'preferredquality': AUDIO_QUALITY,
             }],
-            'quiet': True,
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -146,13 +164,13 @@ async def handle_download_callback(update: Update, context: ContextTypes.DEFAULT
                     os.remove(mp3_filename)
                 await msg.delete()
         except Exception as e:
-            await msg.edit_text(f"❌ Error downloading audio: {str(e)[:100]}")
+            await msg.edit_text(f"❌ Error downloading audio: {str(e)[:150]}")
 
     elif action == "dl_mp4":
         ydl_opts = {
+            **BASE_YTDL_OPTS,
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'outtmpl': 'downloads/%(id)s.%(ext)s',
-            'quiet': True,
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -174,13 +192,12 @@ async def handle_download_callback(update: Update, context: ContextTypes.DEFAULT
                     os.remove(filename)
                 await msg.delete()
         except Exception as e:
-            await msg.edit_text(f"❌ Error downloading video: {str(e)[:100]}")
+            await msg.edit_text(f"❌ Error downloading video: {str(e)[:150]}")
 
 def main():
     if not os.path.exists("downloads"):
         os.makedirs("downloads")
 
-    # Start Flask Web Server in background for Render Port Binding
     threading.Thread(target=run_web_server, daemon=True).start()
     logger.info(f"Flask Web Server running on port {PORT}")
 
