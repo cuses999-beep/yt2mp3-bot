@@ -1,25 +1,35 @@
 import logging
 import os
 import re
+import threading
+from flask import Flask
 import asyncio
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # ==================== CONFIGURATION ====================
-# Pehle 2 lines me APNA REAL TOKEN aur ADMIN ID daal dena:
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
-
-# Optional settings:
 REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "@my_channel_name")
 AUDIO_QUALITY = os.getenv("AUDIO_QUALITY", "192")
+PORT = int(os.getenv("PORT", "10000"))
 # =======================================================
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 users_db = set()
+
+# Dummy Web Server for Render Port Binding
+app_web = Flask(__name__)
+
+@app_web.route('/')
+def home():
+    return "Bot is active and running fine on Render Web Service!"
+
+def run_web_server():
+    app_web.run(host='0.0.0.0', port=PORT)
 
 async def is_subscribed(bot, user_id):
     if not REQUIRED_CHANNEL or REQUIRED_CHANNEL == "@my_channel_name":
@@ -166,42 +176,22 @@ async def handle_download_callback(update: Update, context: ContextTypes.DEFAULT
         except Exception as e:
             await msg.edit_text(f"❌ Error downloading video: {str(e)[:100]}")
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await update.message.reply_text(f"👑 Admin Panel:\nTotal Users: {len(users_db)}\nBroadcast command: /broadcast Message")
-
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    msg_text = " ".join(context.args)
-    if not msg_text:
-        await update.message.reply_text("Usage: /broadcast Hello subscribers!")
-        return
-        
-    count = 0
-    for uid in users_db:
-        try:
-            await context.bot.send_message(chat_id=uid, text=msg_text)
-            count += 1
-        except:
-            pass
-    await update.message.reply_text(f"✅ Broadcast sent to {count} users.")
-
 def main():
     if not os.path.exists("downloads"):
         os.makedirs("downloads")
-        
+
+    # Start Flask Web Server in background for Render Port Binding
+    threading.Thread(target=run_web_server, daemon=True).start()
+    logger.info(f"Flask Web Server running on port {PORT}")
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CallbackQueryHandler(check_sub_callback, pattern="^check_sub$"))
     app.add_handler(CallbackQueryHandler(handle_download_callback, pattern="^dl_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_youtube))
 
-    print("🎵 @yt2mp3sk8_bot clone starting...")
+    print("🎵 Bot starting on Web Service...")
     app.run_polling()
 
 if __name__ == '__main__':
