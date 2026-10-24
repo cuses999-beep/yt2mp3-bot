@@ -95,6 +95,17 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not msg or not user:
         return
+           if msg.text and user.id not in waiting_for_name:
+        detected = detect_media_link(msg.text)
+        if detected:
+            platform, url = detected
+            await msg.reply_text(
+                f"{platform} link detected! 🔗\n"
+                f"Link: {url}\n\n"
+                "Link detection successful. Download processing "
+                "abhi configure nahi hua hai."
+            )
+            return
 
     if user.id in waiting_for_name:
         name = (msg.text or "").strip()
