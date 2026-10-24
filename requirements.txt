@@ -1,4 +1,3 @@
 python-telegram-bot
-   yt-dlp>=2024.08.01
-   Flask
-   gunicorn
+yt-dlp>=2024.08.01
+flask
