@@ -97,16 +97,19 @@ def run_ffmpeg(args):
     if result.returncode != 0:
         raise RuntimeError(result.stderr[-1000:])
 
-
 def tag_mp3(path, name):
     try:
         tags = ID3(str(path))
     except ID3NoHeaderError:
         tags = ID3()
 
+    # Sirf Artist ka naam change karo
+    tags.delall("TPE1")
     tags.add(TPE1(encoding=3, text=[name]))
-    tags.add(TIT2(encoding=3, text=[path.stem]))
+
+    # Title (TIT2) aur cover photo (APIC) ko nahi chhedna
     tags.save(str(path))
+
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
