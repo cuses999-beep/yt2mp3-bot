@@ -215,4 +215,32 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    from urllib.parse import urlparse
+
+def detect_media_link(text):
+    if not text:
+        return None
+
+    for word in text.split():
+        candidate = word.strip("()[]{}<>,\"'")
+
+        if not candidate.startswith(("https://", "http://")):
+            continue
+
+        try:
+            parsed = urlparse(candidate)
+            host = (parsed.hostname or "").lower()
+        except ValueError:
+            continue
+
+        if host == "youtu.be" or host.endswith(".youtube.com") or host == "youtube.com":
+            return ("YouTube", candidate)
+
+        if host == "instagram.com" or host.endswith(".instagram.com"):
+            return ("Instagram", candidate)
+
+        if host == "pin.it" or host == "pinterest.com" or host.endswith(".pinterest.com"):
+            return ("Pinterest", candidate)
+
+    return None
     
