@@ -14,12 +14,23 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
 REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "@my_channel_name")
 AUDIO_QUALITY = os.getenv("AUDIO_QUALITY", "192")
 PORT = int(os.getenv("PORT", "10000"))
+COOKIE_FILE = "cookies.txt"
 # =======================================================
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 users_db = set()
+
+# Automatically write cookies from Environment Variable if provided
+YOUTUBE_COOKIES_ENV = os.getenv("YOUTUBE_COOKIES")
+if YOUTUBE_COOKIES_ENV:
+    try:
+        with open(COOKIE_FILE, "w", encoding="utf-8") as f:
+            f.write(YOUTUBE_COOKIES_ENV)
+        logger.info("Successfully loaded YouTube cookies from environment variable!")
+    except Exception as e:
+        logger.error(f"Failed to write cookies file: {e}")
 
 # Dummy Web Server for Render Port Binding
 app_web = Flask(__name__)
@@ -31,12 +42,13 @@ def home():
 def run_web_server():
     app_web.run(host='0.0.0.0', port=PORT)
 
-# Common yt-dlp options to bypass YouTube sign-in block
+# Common yt-dlp options with Cookies support
 BASE_YTDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'nocheckcertificate': True,
     'geo_bypass': True,
+    'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
     'extractor_args': {
         'youtube': {
             'player_client': ['android', 'ios', 'web'],
@@ -200,6 +212,11 @@ def main():
 
     threading.Thread(target=run_web_server, daemon=True).start()
     logger.info(f"Flask Web Server running on port {PORT}")
+
+    if os.path.exists(COOKIE_FILE):
+        logger.info(f"Loaded cookie file: {COOKIE_FILE}")
+    else:
+        logger.warning("Cookie file not found! yt-dlp will run without cookies.")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
