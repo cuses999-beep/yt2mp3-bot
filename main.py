@@ -7,10 +7,13 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"      # @BotFather se mila token yahan paste karein
-ADMIN_ID = 123456789                    # @userinfobot se mila numeric ID yahan paste karein
-REQUIRED_CHANNEL = "@my_channel_name"   # (Optional) Apna channel username daalein ya khali chhodein
-AUDIO_QUALITY = "192"                   # Audio Quality (128, 192, ya 320)
+# Pehle 2 lines me APNA REAL TOKEN aur ADMIN ID daal dena:
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
+
+# Optional settings:
+REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "@my_channel_name")
+AUDIO_QUALITY = os.getenv("AUDIO_QUALITY", "192")
 # =======================================================
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -29,8 +32,9 @@ async def is_subscribed(bot, user_id):
         return True
 
 async def force_join_markup():
+    channel_clean = REQUIRED_CHANNEL.replace('@', '')
     keyboard = [
-        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL.replace('@', '')}")],
+        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_clean}")],
         [InlineKeyboardButton("✅ Check Subscription", callback_data="check_sub")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -90,7 +94,7 @@ async def handle_download_callback(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
     
-    data = query.data.split("|")
+    data = query.data.split("|", 1)
     action = data[0]
     url = data[1]
     
