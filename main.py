@@ -1,232 +1,218 @@
-import logging
 import os
-import re
-import threading
-from flask import Flask
+import json
 import asyncio
-import yt_dlp
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import logging
+import subprocess
+import tempfile
+from pathlib import Path
+from threading import Thread
 
-# ==================== CONFIGURATION ====================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
-REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "@my_channel_name")
-AUDIO_QUALITY = os.getenv("AUDIO_QUALITY", "192")
-PORT = int(os.getenv("PORT", "10000"))
-COOKIE_FILE = "cookies.txt"
-# =======================================================
+from flask import Flask
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+from mutagen.id3 import ID3, TIT2, TPE1, ID3NoHeaderError
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("media-bot")
 
-users_db = set()
+TOKEN = os.environ.get("BOT_TOKEN")
+PORT = int(os.environ.get("PORT", "10000"))
+MAX_BYTES = 18 * 1024 * 1024
+DATA_FILE = Path("/tmp/media_bot_users.json")
 
-# Automatically write cookies from Environment Variable if provided
-YOUTUBE_COOKIES_ENV = os.getenv("YOUTUBE_COOKIES")
-if YOUTUBE_COOKIES_ENV:
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable is missing")
+
+web = Flask(__name__)
+waiting_for_name = set()
+
+
+@web.get("/")
+def health():
+    return "Media bot is running", 200
+
+
+def load_users():
     try:
-        with open(COOKIE_FILE, "w", encoding="utf-8") as f:
-            f.write(YOUTUBE_COOKIES_ENV)
-        logger.info("Successfully loaded YouTube cookies from environment variable!")
-    except Exception as e:
-        logger.error(f"Failed to write cookies file: {e}")
+        return json.loads(DATA_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
 
-# Dummy Web Server for Render Port Binding
-app_web = Flask(__name__)
 
-@app_web.route('/')
-def home():
-    return "Bot is active and running fine on Render Web Service!"
+def save_user(user_id, name):
+    users = load_users()
+    users[str(user_id)] = name
+    DATA_FILE.write_text(json.dumps(users))
 
-def run_web_server():
-    app_web.run(host='0.0.0.0', port=PORT)
 
-# Base yt-dlp configuration with Anti-Bot bypass clients & cookie file support
-BASE_YTDL_OPTS = {
-    'quiet': True,
-    'no_warnings': True,
-    'nocheckcertificate': True,
-    'geo_bypass': True,
-    'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['ios', 'android', 'mweb', 'tv'],
-            'player_skip': ['webpage', 'configs']
-        }
-    },
-    'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-    }
-}
+def get_name(user):
+    return load_users().get(str(user.id), user.first_name or "User")
 
-async def is_subscribed(bot, user_id):
-    if not REQUIRED_CHANNEL or REQUIRED_CHANNEL == "@my_channel_name":
-        return True
-    try:
-        member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
-        return member.status in ['creator', 'administrator', 'member']
-    except Exception as e:
-        logger.error(f"Subscription check error: {e}")
-        return True
-
-async def force_join_markup():
-    channel_clean = REQUIRED_CHANNEL.replace('@', '')
-    keyboard = [
-        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_clean}")],
-        [InlineKeyboardButton("✅ Check Subscription", callback_data="check_sub")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    waiting_for_name.add(uid)
+    await update.message.reply_text(
+        "Welcome! 🎧\n\n"
+        "Aapka naam kya hai? Ye naam MP3 ke Artist tag mein use hoga."
+    )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "1. /start - naam set karein\n"
+        "2. Audio ya video file upload karein\n"
+        "3. MP3 conversion ke liye /mp3 bhejein\n\n"
+        "Sirf apni ya authorized media files use karein."
+    )
+
+
+async def convert_audio(update, context, source, name):
+    output = source.with_name("converted.mp3")
+    result = subprocess.run(
+        [
+            "ffmpeg", "-nostdin", "-y", "-i", str(source),
+            "-vn", "-codec:a", "libmp3lame", "-q:a", "3",
+            str(output),
+        ],
+        capture_output=True, text=True, timeout=120
+    )
+    if result.returncode != 0 or not output.exists():
+        raise RuntimeError("Audio conversion failed")
+
+    try:
+        tags = ID3(str(output))
+    except ID3NoHeaderError:
+        tags = ID3()
+
+    tags.add(TPE1(encoding=3, text=[name]))
+    tags.add(TIT2(encoding=3, text=[source.stem]))
+    tags.save(str(output))
+
+    with output.open("rb") as audio:
+        await update.message.reply_audio(
+            audio=audio,
+            title=source.stem[:64],
+            performer=name[:64],
+            filename=f"{name}_audio.mp3",
+            caption=f"Artist: {name}",
+        )
+
+
+async def process_file(update, context):
+    message = update.message
     user = update.effective_user
-    users_db.add(user.id)
-    
-    if not await is_subscribed(context.bot, user.id):
-        await update.message.reply_text(
-            f"👋 Hello {user.first_name}!\n\nBot use karne ke liye pehle hamare channel ko join karein.",
-            reply_markup=await force_join_markup()
+
+    if user.id in waiting_for_name:
+        name = (message.text or "").strip()
+        if not name or len(name) > 50:
+            await message.reply_text("Naam 1 se 50 characters ka rakhein.")
+            return
+        save_user(user.id, name)
+        waiting_for_name.discard(user.id)
+        await message.reply_text(
+            f"Naam save ho gaya, {name}! 🎵\n"
+            "Ab apni authorized audio ya video file bhejein."
         )
         return
 
-    welcome_text = (
-        f"🎵 Welcome {user.first_name}!\n\n"
-        "✨ **How to use me:**\n"
-        "1. Send any YouTube Link (Video, Short, Song)\n"
-        "2. Or type any Song Name (e.g. *Arijit Singh Kesariya*)\n"
-        "3. Select **MP3 Audio** or **MP4 Video** to download!"
-    )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    name = get_name(user)
+    media = message.document or message.audio or message.video
 
-async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if await is_subscribed(context.bot, query.from_user.id):
-        await query.message.edit_text("✅ Thank you for joining! Ab YouTube link ya song name bhejo.")
-    else:
-        await query.message.reply_text("❌ Aapne abhi tak channel join nahi kiya hai!")
-
-async def process_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    users_db.add(user_id)
-
-    if not await is_subscribed(context.bot, user_id):
-        await update.message.reply_text("⚠️ Pehle channel join karein!", reply_markup=await force_join_markup())
+    if not media:
+        await message.reply_text(
+            "Audio/video file upload karein. Naam badalne ke liye /start."
+        )
         return
 
-    text = update.message.text
-    url_pattern = r'(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+'
-    
-    if re.match(url_pattern, text):
-        url = text
-    else:
-        url = f"ytsearch1:{text}"
+    if not media.file_name and not (message.audio or message.video):
+        await message.reply_text("File ka naam available nahi hai.")
+        return
 
-    keyboard = [
-        [InlineKeyboardButton("🎵 Download MP3 Audio", callback_data=f"dl_mp3|{url}")],
-        [InlineKeyboardButton("🎬 Download MP4 Video", callback_data=f"dl_mp4|{url}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("🔎 YouTube search complete! Format choose karein:", reply_markup=reply_markup)
+    if media.file_size and media.file_size > MAX_BYTES:
+        await message.reply_text("Testing limit: file 18 MB se chhoti honi chahiye.")
+        return
 
-async def handle_download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data.split("|", 1)
-    action = data[0]
-    url = data[1]
-    
-    msg = await query.message.edit_text("⏳ YouTube se download chal raha hai, kripya wait karein...")
-    
-    if action == "dl_mp3":
-        ydl_opts = {
-            **BASE_YTDL_OPTS,
-            'format': 'ba/ba*/best',
-            'outtmpl': 'downloads/%(id)s.%(ext)s',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': AUDIO_QUALITY,
-            }],
-        }
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if 'entries' in info:
-                    info = info['entries'][0]
-                
-                filename = ydl.prepare_filename(info)
-                mp3_filename = os.path.splitext(filename)[0] + ".mp3"
-                
-                title = info.get('title', 'Audio')
-                performer = info.get('uploader', 'YT2MP3 Bot')
-                
-                with open(mp3_filename, 'rb') as audio:
-                    await context.bot.send_audio(
-                        chat_id=query.message.chat_id,
-                        audio=audio,
-                        title=title,
-                        performer=performer,
-                        caption=f"🎵 **{title}**\n\nDownloaded via Bot"
-                    )
-                
-                if os.path.exists(mp3_filename):
-                    os.remove(mp3_filename)
-                await msg.delete()
-        except Exception as e:
-            await msg.edit_text(f"❌ Error downloading audio: {str(e)[:150]}")
+    ext = Path(media.file_name or "upload.bin").suffix or ".bin"
 
-    elif action == "dl_mp4":
-        ydl_opts = {
-            **BASE_YTDL_OPTS,
-            'format': 'b/best',
-            'outtmpl': 'downloads/%(id)s.%(ext)s',
-        }
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if 'entries' in info:
-                    info = info['entries'][0]
-                    
-                filename = ydl.prepare_filename(info)
-                title = info.get('title', 'Video')
-                
-                with open(filename, 'rb') as video:
-                    await context.bot.send_video(
-                        chat_id=query.message.chat_id,
-                        video=video,
-                        caption=f"🎬 **{title}**\n\nDownloaded via Bot"
-                    )
-                
-                if os.path.exists(filename):
-                    os.remove(filename)
-                await msg.delete()
-        except Exception as e:
-            await msg.edit_text(f"❌ Error downloading video: {str(e)[:150]}")
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / f"source{ext}"
+            tg_file = await context.bot.get_file(media.file_id)
+            await tg_file.download_to_drive(custom_path=str(source))
 
-def main():
-    if not os.path.exists("downloads"):
-        os.makedirs("downloads")
+            if not source.exists() or source.stat().st_size > MAX_BYTES:
+                await message.reply_text("File size limit exceed hui.")
+                return
 
-    threading.Thread(target=run_web_server, daemon=True).start()
-    logger.info(f"Flask Web Server running on port {PORT}")
+            await message.reply_text("Processing... ⚙️")
 
-    if os.path.exists(COOKIE_FILE):
-        logger.info(f"Loaded cookie file: {COOKIE_FILE}")
-    else:
-        logger.warning("Cookie file not found! yt-dlp will run without cookies.")
+            # Uploaded audio/video se MP3 banane ke liye /mp3 use karein.
+            context.user_data["last_file"] = str(source)
+            context.user_data["last_folder"] = folder
 
-    app = Application.builder().token(BOT_TOKEN).build()
+            if message.audio:
+                await convert_audio(update, context, source, name)
+            elif message.video:
+                await message.reply_text(
+                    "Video receive ho gaya. MP3 nikalne ke liye /mp3 bhejein."
+                )
+            else:
+                await message.reply_text(
+                    "File receive ho gayi. Supported audio/video upload karein."
+                )
 
+    except Exception:
+        log.exception("File processing failed")
+        await message.reply_text(
+            "Processing fail hui. Chhoti, supported media file se retry karein."
+        )
+
+
+async def mp3_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "MP3 conversion ke liye audio/video ko dobara document ke roop mein "
+        "bhejein. /start se pehle apna naam set karna zaroori hai."
+    )
+
+
+async def main():
+    app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(check_sub_callback, pattern="^check_sub$"))
-    app.add_handler(CallbackQueryHandler(handle_download_callback, pattern="^dl_"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_youtube))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("mp3", mp3_command))
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND, process_file
+        )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.AUDIO | filters.VIDEO | filters.Document.ALL,
+            process_file
+        )
+    )
 
-    print("🎵 Bot starting on Web Service...")
-    app.run_polling()
+    Thread(
+        target=lambda: web.run(
+            host="0.0.0.0", port=PORT, use_reloader=False
+        ),
+        daemon=True,
+    ).start()
 
-if __name__ == '__main__':
-    main()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=False)
+    log.info("Bot started successfully")
+
+    await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
