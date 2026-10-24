@@ -103,13 +103,15 @@ def tag_mp3(path, name):
     except ID3NoHeaderError:
         tags = ID3()
 
-    # Sirf Artist ka naam change karo
+    # Sirf Artist tag update hoga
     tags.delall("TPE1")
     tags.add(TPE1(encoding=3, text=[name]))
 
-    # Title (TIT2) aur cover photo (APIC) ko nahi chhedna
-    tags.save(str(path))
+    # Original song title aur cover photo preserve karo
+    if not tags.getall("TIT2"):
+        tags.add(TIT2(encoding=3, text=[path.stem]))
 
+    tags.save(str(path))
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
