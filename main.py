@@ -97,19 +97,21 @@ def run_ffmpeg(args):
     if result.returncode != 0:
         raise RuntimeError(result.stderr[-1000:])
 
-def tag_mp3(path, name):
+
+def tag_mp3(path, name, song_title=None):
     try:
         tags = ID3(str(path))
     except ID3NoHeaderError:
         tags = ID3()
 
-    # Sirf Artist tag update hoga
+    # Sirf Artist tag update hoga (User ka naam set hoga)
     tags.delall("TPE1")
     tags.add(TPE1(encoding=3, text=[name]))
 
-    # Original song title aur cover photo preserve karo
-    if not tags.getall("TIT2"):
-        tags.add(TIT2(encoding=3, text=[path.stem]))
+    # Original Song Title preserving logic:
+    # Agar pehle se TIT2 tag hai toh use rehne do, nahi toh extracted title use karo
+    if song_title and not tags.getall("TIT2"):
+        tags.add(TIT2(encoding=3, text=[song_title]))
 
     tags.save(str(path))
 
@@ -144,8 +146,21 @@ async def process_upload(update, context, name):
         await msg.reply_text("Testing limit 18 MB hai. Chhoti file bhejein.")
         return
 
-    filename = getattr(media, "file_name", None) or "upload.bin"
-    ext = Path(filename).suffix.lower()
+    # Extract original file name and title from media metadata
+    raw_filename = getattr(media, "file_name", None)
+    
+    # Audio attribute metadata (telegram title)
+    audio_title = getattr(media, "title", None)
+    audio_performer = getattr(media, "performer", None)
+
+    if not raw_filename:
+        if audio_title:
+            raw_filename = f"{audio_title}.mp3"
+        else:
+            raw_filename = "audio.mp3"
+
+    ext = Path(raw_filename).suffix.lower()
+    song_display_name = audio_title or Path(raw_filename).stem
 
     allowed = {
         ".mp3", ".m4a", ".aac", ".wav", ".ogg", ".opus",
@@ -174,14 +189,19 @@ async def process_upload(update, context, name):
                 "-codec:a", "libmp3lame", "-q:a", "3",
                 str(mp3)
             ])
-            tag_mp3(mp3, name)
+            
+            # ID3 metadata tag update
+            tag_mp3(mp3, name, song_title=song_display_name)
+
+            # Output filename original file ke name par base hoga (not "input.mp3" or "name.mp3")
+            out_filename = Path(raw_filename).stem + ".mp3"
 
             with mp3.open("rb") as f:
                 await msg.reply_audio(
                     audio=f,
-                    filename=f"{name}_audio.mp3",
-                    title=source.stem[:64],
-                    performer=name[:64],
+                    filename=out_filename,
+                    title=song_display_name,  # Original song title preserve kiya gaya hai
+                    performer=name[:64],       # Sirf artist update hoga
                     caption=f"Artist: {name}",
                 )
 
@@ -192,7 +212,7 @@ async def process_upload(update, context, name):
                     "-map", "0:v:0", "-map", "0:a?",
                     "-c:v", "libx264", "-c:a", "aac",
                     "-metadata", f"artist={name}",
-                    "-metadata", f"title={source.stem}",
+                    "-metadata", f"title={song_display_name}",
                     "-movflags", "+faststart",
                     str(mp4)
                 ])
@@ -200,7 +220,7 @@ async def process_upload(update, context, name):
                 with mp4.open("rb") as f:
                     await msg.reply_document(
                         document=f,
-                        filename=f"{name}_video.mp4",
+                        filename=raw_filename,
                         caption=f"Processed video | Artist: {name}",
                     )
 
@@ -304,4 +324,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
